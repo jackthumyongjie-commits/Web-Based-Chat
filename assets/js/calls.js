@@ -216,45 +216,64 @@
 
   /**
    * Voice = microphone only (never touch camera).
-   * Some Chrome/Windows builds throw "Could not start video source"
-   * if constraints still mention `video: false` while a broken webcam exists.
+   * Retry with simpler constraints — Windows/Chrome often throws NotReadableError
+   * for permission / default-device issues, not only "another app".
    */
   async function getMedia(type) {
     const wantVideo = type === 'video';
-    const constraints = wantVideo
-      ? {
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: {
-            facingMode: 'user',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-        }
-      : {
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        };
-    try {
-      return await navigator.mediaDevices.getUserMedia(constraints);
-    } catch (err) {
-      throw friendlyMediaError(err, wantVideo);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw friendlyMediaError({ name: 'NotSupportedError' }, wantVideo);
     }
+
+    const attempts = wantVideo
+      ? [
+          {
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+            video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+          },
+          {
+            audio: true,
+            video: { facingMode: 'user' },
+          },
+          { audio: true, video: true },
+        ]
+      : [
+          {
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          },
+          { audio: true },
+        ];
+
+    // Prefer a real audioinput if the default device is broken
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter((d) => d.kind === 'audioinput' && d.deviceId);
+      if (!wantVideo && mics.length) {
+        attempts.push({ audio: { deviceId: { exact: mics[0].deviceId } } });
+        if (mics[1]) attempts.push({ audio: { deviceId: { exact: mics[1].deviceId } } });
+      }
+    } catch (e) { /* ignore */ }
+
+    let lastErr = null;
+    for (const constraints of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw friendlyMediaError(lastErr || { name: 'NotReadableError' }, wantVideo);
   }
 
   function friendlyMediaError(err, wantVideo) {
     const name = err && err.name ? err.name : '';
-    let key = 'js.media_denied';
+    let key = wantVideo ? 'js.media_cam_denied' : 'js.media_mic_denied';
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
       key = wantVideo ? 'js.media_no_cam' : 'js.media_no_mic';
-    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+    } else if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
       key = wantVideo ? 'js.media_cam_busy' : 'js.media_mic_busy';
+    } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      key = wantVideo ? 'js.media_cam_denied' : 'js.media_mic_denied';
     } else if (name === 'SecurityError' || name === 'NotSupportedError') {
       key = 'js.media_insecure';
     }

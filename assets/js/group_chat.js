@@ -7,7 +7,7 @@
   if (!app) return;
 
   const groupId = Number(app.dataset.groupId);
-  const state = { lastId: 0, replyTo: null, myRole: 'member', mediaRecorder: null, chunks: [], recordStart: 0, recordTimer: null };
+  const state = { lastId: 0, replyTo: null, myRole: 'member', voiceCapture: null, recordStart: 0, recordTimer: null, sending: false };
   const msgList = document.getElementById('gMsgList');
 
   function roleLabel(role) {
@@ -38,7 +38,7 @@
     else if (m.message_type === 'file' && m.file_url)
       body = `<a href="${WC.escapeHtml(m.file_url)}" target="_blank"><i class="fa-solid fa-paperclip"></i> ${WC.escapeHtml(m.file_name || WC.t('js.file'))}</a>`;
     else if (m.message_type === 'voice' && m.file_url)
-      body = `<audio controls src="${WC.escapeHtml(m.file_url)}" style="max-width:220px;"></audio>`;
+      body = `<audio controls preload="auto" playsinline webkit-playsinline src="${WC.escapeHtml(m.file_url)}" style="max-width:220px;"></audio>`;
     else body = WC.escapeHtml(m.body || '');
 
     const reply = m.reply
@@ -177,7 +177,8 @@
 
   async function sendText() {
     const text = document.getElementById('gComposer').value.trim();
-    if (!text) return;
+    if (!text || state.sending) return;
+    state.sending = true;
     try {
       const res = await WC.fetchJSON('groups.php', {
         method: 'POST',
@@ -186,10 +187,14 @@
       document.getElementById('gComposer').value = '';
       state.replyTo = null;
       document.getElementById('gReplyBar').classList.remove('show');
-      msgList.insertAdjacentHTML('beforeend', renderMsg(res.data.message));
-      state.lastId = Math.max(state.lastId, res.data.message.id);
+      const m = res.data.message;
+      if (m && !msgList.querySelector('.wc-msg[data-id="' + m.id + '"]')) {
+        msgList.insertAdjacentHTML('beforeend', renderMsg(m));
+      }
+      if (m && m.id > state.lastId) state.lastId = m.id;
       msgList.scrollTop = msgList.scrollHeight;
     } catch (e) { WC.toast(e.message, 'error'); }
+    finally { state.sending = false; }
   }
 
   async function sendFile(file, type) {
@@ -214,7 +219,11 @@
 
   document.getElementById('gSend').addEventListener('click', sendText);
   document.getElementById('gComposer').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (e.isComposing || e.keyCode === 229) return;
+      sendText();
+    }
     WC.fetchJSON('groups.php', { method: 'POST', body: { action: 'typing', group_id: groupId } }).catch(() => {});
   });
   document.getElementById('gImage').addEventListener('change', (e) => { if (e.target.files[0]) sendFile(e.target.files[0], 'image').catch((err) => WC.toast(err.message, 'error')); e.target.value = ''; });
@@ -222,59 +231,39 @@
 
   document.getElementById('gStartVoice').addEventListener('click', async () => {
     try {
-      if (typeof MediaRecorder === 'undefined') {
-        WC.toast(WC.t('js.voice_unsupported'), 'error');
-        return;
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      state.chunks = [];
-      const mimeCandidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'video/mp4'];
-      let mime = '';
-      for (const m of mimeCandidates) {
-        if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) { mime = m; break; }
-      }
-      state.mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      state.recordMime = state.mediaRecorder.mimeType || mime || 'audio/webm';
-      state.recordStart = Date.now();
-      state.mediaRecorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) state.chunks.push(ev.data); };
-      state.mediaRecorder.start(250);
+      if (state.voiceCapture) return;
+      state.voiceCapture = await WC.startVoiceCapture();
+      state.recordStart = state.voiceCapture.startedAt;
       document.getElementById('gRecordBar').classList.add('show');
       state.recordTimer = setInterval(() => {
         const sec = Math.floor((Date.now() - state.recordStart) / 1000);
         document.getElementById('gRecordTimer').textContent =
           String(Math.floor(sec / 60)).padStart(2, '0') + ':' + String(sec % 60).padStart(2, '0');
       }, 250);
-    } catch (e) { WC.toast(WC.t('js.mic_required'), 'error'); }
+    } catch (e) {
+      WC.toast((e && e.message) ? e.message : WC.t('js.mic_required'), 'error');
+    }
   });
   document.getElementById('gCancelVoice').addEventListener('click', () => {
-    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
-      try { state.mediaRecorder.stop(); } catch (e) { /* ignore */ }
+    if (state.voiceCapture) {
+      try { state.voiceCapture.cancel(); } catch (e) { /* ignore */ }
+      state.voiceCapture = null;
     }
-    if (state.mediaRecorder && state.mediaRecorder.stream) {
-      state.mediaRecorder.stream.getTracks().forEach((t) => t.stop());
-    }
-    state.mediaRecorder = null;
     clearInterval(state.recordTimer);
     document.getElementById('gRecordBar').classList.remove('show');
   });
-  document.getElementById('gSendVoice').addEventListener('click', () => {
-    if (!state.mediaRecorder) return;
-    const duration = Math.max(0.5, (Date.now() - state.recordStart) / 1000);
-    const rec = state.mediaRecorder;
-    const mime = state.recordMime || rec.mimeType || 'audio/webm';
-    rec.onstop = async () => {
-      clearInterval(state.recordTimer);
-      document.getElementById('gRecordBar').classList.remove('show');
-      try { if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
-      const blob = new Blob(state.chunks, { type: mime.split(';')[0] || 'audio/webm' });
-      if (!blob.size) { WC.toast(WC.t('js.voice_empty'), 'error'); state.mediaRecorder = null; return; }
-      const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
-      const file = new File([blob], 'voice.' + ext, { type: blob.type || 'audio/' + ext });
-      file._duration = duration;
-      try { await sendFile(file, 'voice'); } catch (e) { WC.toast(e.message, 'error'); }
-      state.mediaRecorder = null;
-    };
-    try { if (rec.state !== 'inactive') rec.stop(); else rec.onstop(); } catch (e) { WC.toast(WC.t('js.upload_failed'), 'error'); }
+  document.getElementById('gSendVoice').addEventListener('click', async () => {
+    if (!state.voiceCapture) return;
+    const cap = state.voiceCapture;
+    state.voiceCapture = null;
+    clearInterval(state.recordTimer);
+    document.getElementById('gRecordBar').classList.remove('show');
+    try {
+      const file = await cap.stop();
+      await sendFile(file, 'voice');
+    } catch (e) {
+      WC.toast((e && e.message) ? e.message : WC.t('js.upload_failed'), 'error');
+    }
   });
 
   msgList.addEventListener('click', async (e) => {
@@ -361,10 +350,9 @@
       const messages = res.data.messages || [];
       if (messages.length) {
         messages.forEach((m) => {
-          if (m.id > state.lastId) {
-            msgList.insertAdjacentHTML('beforeend', renderMsg(m));
-            state.lastId = m.id;
-          }
+          if (m.id > state.lastId) state.lastId = m.id;
+          if (msgList.querySelector('.wc-msg[data-id="' + m.id + '"]')) return;
+          msgList.insertAdjacentHTML('beforeend', renderMsg(m));
         });
         msgList.scrollTop = msgList.scrollHeight;
       }
@@ -374,7 +362,7 @@
         ? WC.t('js.typing', { name: names[0] })
         : names.length > 1 ? WC.t('js.typing_many', { names: names.join(', ') }) : '';
     } catch (e) {}
-  }, 3000);
+  }, 1000);
 
   Promise.all([loadGroup(), loadHistory()]).catch((e) => WC.toast(e.message, 'error'));
 })();

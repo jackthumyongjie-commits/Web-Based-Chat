@@ -1,13 +1,12 @@
 # WebChat — Apache helpers for cPanel / shared hosting
 Options -Indexes
 
-# After FreeSSL / AutoSSL is active, uncomment the block below:
-# <IfModule mod_rewrite.c>
-#   RewriteEngine On
-#   RewriteCond %{HTTPS} !=on
-#   RewriteCond %{HTTP:X-Forwarded-Proto} !=https
-#   RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
-# </IfModule>
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>
 
 # Block direct HTTP access to sensitive paths
 RedirectMatch 403 (?i)/(includes|database|logs)/

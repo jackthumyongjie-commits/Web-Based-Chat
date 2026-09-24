@@ -9,8 +9,10 @@
     peerId: null,
     peer: null,
     lastId: 0,
+    sending: false,
     replyTo: null,
     mediaRecorder: null,
+    voiceCapture: null,
     recordedChunks: [],
     recordStart: 0,
     recordTimer: null,
@@ -91,7 +93,7 @@
     } else if (m.message_type === 'file' && m.file_url) {
       body = `<a class="link-dark" href="${WC.escapeHtml(m.file_url)}" target="_blank" rel="noopener"><i class="fa-solid fa-paperclip"></i> ${WC.escapeHtml(m.file_name || 'File')}</a>`;
     } else if (m.message_type === 'voice' && m.file_url) {
-      body = `<audio controls preload="metadata" playsinline src="${WC.escapeHtml(m.file_url)}" style="max-width:min(240px,70vw);"></audio>` +
+      body = `<audio controls preload="auto" playsinline webkit-playsinline src="${WC.escapeHtml(m.file_url)}" style="max-width:min(240px,70vw);"></audio>` +
         (m.voice_duration ? `<div class="small opacity-75">${Number(m.voice_duration).toFixed(1)}s</div>` : '');
     } else {
       body = WC.escapeHtml(m.body || '');
@@ -126,9 +128,21 @@
 
   function appendMessages(messages, replace) {
     if (replace) els.msgList.innerHTML = '';
-    const html = messages.map(renderMessage).join('');
-    els.msgList.insertAdjacentHTML('beforeend', html);
-    messages.forEach((m) => { if (m.id > state.lastId) state.lastId = m.id; });
+    const fresh = [];
+    messages.forEach((m) => {
+      if (!m || !m.id) return;
+      if (m.id > state.lastId) state.lastId = m.id;
+      // Skip if already on screen (send + poll race)
+      if (!replace && els.msgList.querySelector('.wc-msg[data-id="' + m.id + '"]')) return;
+      fresh.push(m);
+    });
+    if (!fresh.length && !replace) return;
+    const html = (replace ? messages : fresh).map(renderMessage).join('');
+    if (replace) {
+      els.msgList.innerHTML = html;
+    } else if (html) {
+      els.msgList.insertAdjacentHTML('beforeend', html);
+    }
     els.msgList.scrollTop = els.msgList.scrollHeight;
   }
 
@@ -216,7 +230,8 @@
 
   async function sendText() {
     const text = els.composer.value.trim();
-    if (!text || !state.peerId) return;
+    if (!text || !state.peerId || state.sending) return;
+    state.sending = true;
     try {
       const res = await WC.fetchJSON('messages.php', {
         method: 'POST',
@@ -235,6 +250,8 @@
       loadConversations();
     } catch (e) {
       WC.toast(e.message || WC.t('js.unable_send'), 'error');
+    } finally {
+      state.sending = false;
     }
   }
 
@@ -287,8 +304,20 @@
         }
         const t = await WC.fetchJSON('chat.php?action=typing_status&user_id=' + state.peerId);
         els.typing.textContent = t.data.typing ? WC.t('js.typing', { name: t.data.username || 'User' }) : '';
+        // Refresh peer online/offline (was stuck after first open)
+        try {
+          const pr = await WC.fetchJSON('presence.php?action=get&ids=' + state.peerId);
+          const u = (pr.data.users || [])[0];
+          if (u && state.peer) {
+            state.peer.presence = u.presence;
+            els.chatSubtitle.textContent = (u.presence || 'offline')
+              + (state.peer.status_message ? ' · ' + state.peer.status_message : '');
+            const badge = els.infoPanel.querySelector('.badge');
+            if (badge) badge.textContent = u.presence || 'offline';
+          }
+        } catch (pe) { /* ignore */ }
       } catch (e) { /* ignore transient */ }
-    }, 2800);
+    }, 1000);
   }
 
   // Events
@@ -301,6 +330,7 @@
   els.composer.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (e.isComposing || e.keyCode === 229) return; // IME
       sendText();
     }
     if (state.peerId) {
@@ -373,43 +403,15 @@
     });
   }
 
+  async function openMicStream() {
+    return WC.openMicStream();
+  }
+
   document.getElementById('btnStartVoice').addEventListener('click', async () => {
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        WC.toast(WC.t('js.media_insecure'), 'error');
-        return;
-      }
-      if (typeof MediaRecorder === 'undefined') {
-        WC.toast(WC.t('js.voice_unsupported'), 'error');
-        return;
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      state.recordedChunks = [];
-      const mimeCandidates = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/mp4',
-        'video/webm;codecs=opus',
-        'video/mp4',
-      ];
-      let mime = '';
-      for (const m of mimeCandidates) {
-        if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) {
-          mime = m;
-          break;
-        }
-      }
-      const opts = mime ? { mimeType: mime } : undefined;
-      state.mediaRecorder = opts ? new MediaRecorder(stream, opts) : new MediaRecorder(stream);
-      state.recordMime = state.mediaRecorder.mimeType || mime || 'audio/webm';
-      state.recordStart = Date.now();
-      state.mediaRecorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) state.recordedChunks.push(ev.data);
-      };
-      // timeslice keeps data flowing on Safari / some Chromium builds
-      state.mediaRecorder.start(250);
+      if (state.voiceCapture) return;
+      state.voiceCapture = await WC.startVoiceCapture();
+      state.recordStart = state.voiceCapture.startedAt;
       els.recordBar.classList.add('show');
       state.recordTimer = setInterval(() => {
         const sec = Math.floor((Date.now() - state.recordStart) / 1000);
@@ -421,6 +423,10 @@
   });
 
   document.getElementById('btnCancelVoice').addEventListener('click', () => {
+    if (state.voiceCapture) {
+      try { state.voiceCapture.cancel(); } catch (e) { /* ignore */ }
+      state.voiceCapture = null;
+    }
     if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
       try { state.mediaRecorder.stop(); } catch (e) { /* ignore */ }
     }
@@ -433,35 +439,17 @@
     els.recordBar.classList.remove('show');
   });
 
-  document.getElementById('btnSendVoice').addEventListener('click', () => {
-    if (!state.mediaRecorder) return;
-    const duration = Math.max(0.5, (Date.now() - state.recordStart) / 1000);
-    const rec = state.mediaRecorder;
-    const mime = state.recordMime || rec.mimeType || 'audio/webm';
-    rec.onstop = async () => {
-      clearInterval(state.recordTimer);
-      els.recordBar.classList.remove('show');
-      try {
-        if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop());
-      } catch (e) { /* ignore */ }
-      const blob = new Blob(state.recordedChunks, { type: mime.split(';')[0] || 'audio/webm' });
-      if (!blob.size) {
-        WC.toast(WC.t('js.voice_empty'), 'error');
-        state.mediaRecorder = null;
-        return;
-      }
-      const ext = mime.indexOf('mp4') >= 0 ? 'mp4' : (mime.indexOf('ogg') >= 0 ? 'ogg' : 'webm');
-      const file = new File([blob], 'voice-' + Date.now() + '.' + ext, { type: blob.type || 'audio/' + ext });
-      file._duration = duration;
-      await sendFile(file, 'voice');
-      state.mediaRecorder = null;
-      state.recordedChunks = [];
-    };
+  document.getElementById('btnSendVoice').addEventListener('click', async () => {
+    if (!state.voiceCapture) return;
+    const cap = state.voiceCapture;
+    state.voiceCapture = null;
+    clearInterval(state.recordTimer);
+    els.recordBar.classList.remove('show');
     try {
-      if (rec.state !== 'inactive') rec.stop();
-      else rec.onstop();
+      const file = await cap.stop();
+      await sendFile(file, 'voice');
     } catch (e) {
-      WC.toast(WC.t('js.upload_failed'), 'error');
+      WC.toast((e && e.message) ? e.message : WC.t('js.upload_failed'), 'error');
     }
   });
 

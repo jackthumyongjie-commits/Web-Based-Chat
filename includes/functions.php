@@ -200,12 +200,16 @@ function compute_presence(array $user): string
     if (!$last) {
         return 'offline';
     }
-    $ts = strtotime($last);
-    if ($ts === false) {
+    try {
+        // Interpret DB datetime in app timezone (not server default / UTC mismatch)
+        $tz = new DateTimeZone(date_default_timezone_get());
+        $dt = new DateTimeImmutable((string) $last, $tz);
+        $ago = time() - $dt->getTimestamp();
+    } catch (Throwable $e) {
         return 'offline';
     }
-    $ago = time() - $ts;
-    if ($ago <= PRESENCE_ONLINE_SECONDS) {
+    // Allow a little slack so a missed poll tick does not flip to offline
+    if ($ago <= PRESENCE_ONLINE_SECONDS + 15) {
         return 'online';
     }
     if ($ago <= PRESENCE_AWAY_SECONDS) {
@@ -217,10 +221,12 @@ function compute_presence(array $user): string
 function touch_presence(int $userId, ?string $force = null): void
 {
     $presence = $force ?? 'online';
+    // Write PHP clock (same TZ as compute_presence) — do not rely on MySQL NOW() alone
+    $now = (new DateTimeImmutable('now'))->format('Y-m-d H:i:s');
     $stmt = db()->prepare(
-        'UPDATE users SET last_activity_at = NOW(), last_seen_at = NOW(), presence = ? WHERE id = ?'
+        'UPDATE users SET last_activity_at = ?, last_seen_at = ?, presence = ? WHERE id = ?'
     );
-    $stmt->execute([$presence, $userId]);
+    $stmt->execute([$now, $now, $presence, $userId]);
 }
 
 function create_notification(

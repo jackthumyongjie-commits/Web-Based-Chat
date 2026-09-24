@@ -87,8 +87,9 @@ function logout_user(): void
     $uid = current_user_id();
     if ($uid) {
         try {
-            $stmt = db()->prepare('UPDATE users SET presence = ?, last_seen_at = NOW() WHERE id = ?');
-            $stmt->execute(['offline', $uid]);
+            $now = (new DateTimeImmutable('now'))->format('Y-m-d H:i:s');
+            $stmt = db()->prepare('UPDATE users SET presence = ?, last_seen_at = ?, last_activity_at = ? WHERE id = ?');
+            $stmt->execute(['offline', $now, $now, $uid]);
         } catch (Throwable $e) {
             app_log('auth', 'Logout presence update failed: ' . $e->getMessage());
         }

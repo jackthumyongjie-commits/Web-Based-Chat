@@ -28,6 +28,9 @@ final class Database
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES   => false,
             ]);
+            // Keep MySQL NOW() aligned with PHP timezone (fixes false "offline" on cPanel)
+            $offset = (new DateTimeImmutable('now'))->format('P');
+            self::$pdo->exec('SET time_zone = ' . self::$pdo->quote($offset));
         } catch (PDOException $e) {
             app_log('database', 'Connection failed: ' . $e->getMessage());
             if (PHP_SAPI === 'cli') {

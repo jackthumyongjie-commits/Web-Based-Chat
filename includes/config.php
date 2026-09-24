@@ -92,7 +92,7 @@ if (!defined('TYPING_TTL_SECONDS')) {
     define('TYPING_TTL_SECONDS', 4);
 }
 if (!defined('PRESENCE_ONLINE_SECONDS')) {
-    define('PRESENCE_ONLINE_SECONDS', 60);
+    define('PRESENCE_ONLINE_SECONDS', 90);
 }
 if (!defined('PRESENCE_AWAY_SECONDS')) {
     define('PRESENCE_AWAY_SECONDS', 300);
