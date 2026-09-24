@@ -1,0 +1,13 @@
+<?php
+/**
+ * Local configuration overrides (optional).
+ * Copy values from config.php and change as needed.
+ * This file is git-ignored in production if you choose.
+ */
+
+// define('DB_HOST', '127.0.0.1');
+// define('DB_NAME', 'webconnect');
+// define('DB_USER', 'root');
+// define('DB_PASS', '');
+// define('APP_URL', 'http://localhost/project/WebChat');
+// define('APP_DEBUG', true);

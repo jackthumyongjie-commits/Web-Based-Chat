@@ -1,0 +1,15 @@
+# Local / runtime (do not upload secrets or user media)
+includes/config.local.php
+logs/*.log
+uploads/avatars/*
+uploads/images/*
+uploads/files/*
+uploads/voices/*
+uploads/groups/*
+!uploads/**/.htaccess
+!uploads/**/.gitkeep
+.DS_Store
+Thumbs.db
+_fix_admin.php
+tools/
+scripts/*.log
